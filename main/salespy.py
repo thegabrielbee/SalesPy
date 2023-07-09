@@ -15,6 +15,9 @@ import numpy as np
 # Tipagem
 from collections.abc import Iterable
 
+# Logs
+from loguru import logger as lgg
+
 class SalesforceError(Exception):
     """Base Salesforce API exception"""
 
@@ -136,75 +139,6 @@ class SoapDados:
             raise Exception(codigo_excecao, msg_excecao)
 
         return resposta
-
-    def query(self, query_string, tamanho_match_query=None):
-    
-        """ Método destinado a realização de consultas ao Banco de Dados da ORG.
-            
-            query_string: str - Consulta
-            tamanho_match_query: str - Tamanho da Batch para execução
-            
-        """
-        
-        headers = {
-
-            "Content-Type": "text/xml", 
-            "SOAPAction": "queryAll"
-
-        }
-
-        # Coleta o XML e adequa os respectivos dados
-        xml_query = regex.sub("SESSAO_ID", self.sessao_id, SalesforceConfiguracoes.XML_QUERY.value)
-        xml_query = regex.sub("QUERY_STRING", query_string, xml_query)
-        tamanho_match_query = SalesforceConfiguracoes.TAMANHO_BATCH_QUERY.value if tamanho_match_query is None else tamanho_match_query
-        xml_query = regex.sub("TAMANHO_BATCH_QUERY", tamanho_match_query, xml_query)
-        
-        # Realiza a requisição junto ao serviço
-        resposta = r.post(self.org_instancia_url + SalesforceEndpoints.SERVICO_SOAP.value, 
-                     data=xml_query, 
-                     headers=headers
-                    )
-
-        if resposta.status_code != 200:
-
-            codigo_excecao = Utilidades.retorna_valorelemento_pornome(
-                                    resposta.content, 'sf:exceptionCode'
-                                 )
-
-            msg_excecao = Utilidades.retorna_valorelemento_pornome(
-                                resposta.content, 'sf:exceptionMessage'
-                              )
-
-            raise Exception(codigo_excecao, msg_excecao)
-            
-        # Coleta os campos solicitados na String de Consulta. Sendo estes mais à frente coletados junto ao retorno,
-        # visto que todo sistema é falho e não é desejável dados não solicitados
-        query_campos = []
-        query_campos_tmp = [
-
-            campo for campo in query_string.replace(",", "").split()
-
-        ]
-        query_campos_tmp.remove("SELECT")
-
-        for campo in query_campos_tmp:
-
-            if campo == "FROM":
-
-                break
-
-            query_campos.append(campo)
-
-        # Coleta os dados da query e armazena no pandas.DataFrame: df_query_dados 
-        df_query_dados = pd.DataFrame()
-        
-        for campo in query_campos:
-            
-            padrao_regex = regex.compile(f"\s+.*?<sf:{campo}>(.*?)</sf:{campo}>", regex.IGNORECASE)
-            items = regex.split(padrao_regex, resposta.text)
-            df_query_dados[campo] = [item for item in regex.split(padrao_regex, resposta.text) if item[0] != "<"]
-            
-        return df_query_dados
     
     def insert(self, df: pd.DataFrame, nome_objeto: str):
 
@@ -446,6 +380,76 @@ class SoapDados:
         
         return resposta
     
+    def query(self, query_string, tamanho_match_query=None):
+    
+        """ Método destinado a realização de consultas ao Banco de Dados da ORG.
+            
+            query_string: str - Consulta
+            tamanho_match_query: str - Tamanho da Batch para execução
+            
+        """
+        
+        headers = {
+
+            "Content-Type": "text/xml", 
+            "SOAPAction": "queryAll"
+
+        }
+
+        # Coleta o XML e adequa os respectivos dados
+        xml_query = regex.sub("SESSAO_ID", self.sessao_id, SalesforceConfiguracoes.XML_QUERY.value)
+        xml_query = regex.sub("QUERY_STRING", query_string, xml_query)
+        tamanho_match_query = SalesforceConfiguracoes.TAMANHO_BATCH_QUERY.value if tamanho_match_query is None else tamanho_match_query
+        xml_query = regex.sub("TAMANHO_BATCH_QUERY", tamanho_match_query, xml_query)
+        
+        # Realiza a requisição junto ao serviço
+        resposta = r.post(self.org_instancia_url + SalesforceEndpoints.SERVICO_SOAP.value, 
+                     data=xml_query, 
+                     headers=headers
+                    )
+
+        if resposta.status_code != 200:
+
+            codigo_excecao = Utilidades.retorna_valorelemento_pornome(
+                                    resposta.content, 'sf:exceptionCode'
+                                 )
+
+            msg_excecao = Utilidades.retorna_valorelemento_pornome(
+                                resposta.content, 'sf:exceptionMessage'
+                              )
+
+            raise Exception(codigo_excecao, msg_excecao)
+            
+        # Coleta os campos solicitados na String de Consulta. Sendo estes mais à frente coletados junto ao retorno,
+        # visto que todo sistema é falho e não é desejável dados não solicitados
+        query_campos = []
+        query_campos_tmp = [
+
+            campo for campo in query_string.replace(",", "").split()
+
+        ]
+        query_campos_tmp.remove("SELECT")
+
+        for campo in query_campos_tmp:
+
+            if campo == "FROM":
+
+                break
+
+            query_campos.append(campo)
+
+        # Coleta os dados da query e armazena no pandas.DataFrame: df_query_dados 
+        df_query_dados = pd.DataFrame()
+        
+        for campo in query_campos:
+            
+            df_query_dados[campo] = Utilidades.valores_campos_xml(xml_string=resposta.text, nome_elemento=campo, case_insensitive=True)
+            
+            # DEFINE COMO np.nan TODOS OS CAMPOS COM VALORES NULOS
+            df_query_dados.loc[df_query_dados[campo].str.contains('xsi:nil="true"')] = np.nan
+            
+        return df_query_dados
+    
 class SoapAuth:
     
     """ Classe destinada a realização de login e logout da ORG
@@ -505,12 +509,13 @@ class SoapAuth:
         self.url_instancia_soap = org_instancia_url + SalesforceEndpoints.SERVICO_SOAP.value
         self.sessao_id = sessao_id; self.org_instancia_url = org_instancia_url
         
+
     def logout(self):
         
         """ Método destinado ao encerramento da Autenticação/Login junto a Salesforce API Soap.
             
         """
-        
+
         headers = {
 
             "Content-Type": "text/xml; charset=UTF-8",
@@ -523,23 +528,23 @@ class SoapAuth:
         
         # Realiza a requisição junto ao serviço
         resposta = r.post(self.url_instancia_soap, headers=headers, data=xml_logout)
-
+        
         if resposta.status_code != 200:
             
             codigo_excecao = Utilidades.retorna_valorelemento_pornome(
                                 resposta.content, 'sf:exceptionCode'
-                             )
+                            )
             
             msg_excecao = Utilidades.retorna_valorelemento_pornome(
                             resposta.content, 'sf:exceptionMessage'
-                          )
+                        )
             
             raise SalesforceAuthenticationFailed(codigo_excecao, msg_excecao)
-        
-        self.sessao_id = None
-        
-        return resposta.text
-    
+
+                 
+
+        self.sessao_id = ""
+
 class SalesSoap(SoapDados, SoapAuth):
             
     """ Classe destinada a armazenar dados de sessão e métodos para interação com a API
@@ -549,10 +554,6 @@ class SalesSoap(SoapDados, SoapAuth):
     def __init__(self, username, senha, secret, url=None):
         
         super().__init__(username, senha, secret, url=None)
-        
-    def __del__(self):
-        
-        self.logout()
             
 class SalesforceConfiguracoes(Enum):
     
@@ -563,32 +564,6 @@ class SalesforceConfiguracoes(Enum):
     VERSAO_API_PADRAO = "58.0"
     TIPO_LOGIN_PADRAO = "u" # utilizar "c" para partner
     TAMANHO_BATCH_QUERY = "50"
-    
-    # XML para realização de login
-    XML_LOGIN = """
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:partner.soap.sforce.com">
-   <soapenv:Body>
-      <urn:login>
-         <urn:username>USERNAME</urn:username>
-         <urn:password>SENHA_SECRET</urn:password>
-      </urn:login>
-   </soapenv:Body>
-</soapenv:Envelope>
-"""
-    
-    # XML para realização de logout
-    XML_LOGOUT = """
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:partner.soap.sforce.com">
-   <soapenv:Header>
-      <urn:SessionHeader>
-         <urn:sessionId>SESSAO_ID</urn:sessionId>
-      </urn:SessionHeader>
-   </soapenv:Header>
-   <soapenv:Body>
-      <urn:logout/>
-   </soapenv:Body>
-</soapenv:Envelope>
-"""
 
     # XML para realização de Exclusões
     XML_DELETE = """
@@ -602,25 +577,6 @@ class SalesforceConfiguracoes(Enum):
       <urn:delete>
          REGISTROS
       </urn:delete>
-   </soapenv:Body>
-</soapenv:Envelope>
-"""
-
-    # XML para realização de Querys
-    XML_QUERY = """
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:partner.soap.sforce.com">
-   <soapenv:Header>
-      <urn:QueryOptions>
-         <urn:batchSize>TAMANHO_BATCH_QUERY</urn:batchSize>
-      </urn:QueryOptions>
-      <urn:SessionHeader>
-         <urn:sessionId>SESSAO_ID</urn:sessionId>
-      </urn:SessionHeader>
-   </soapenv:Header>
-   <soapenv:Body>
-      <urn:queryAll>
-         <urn:queryString>QUERY_STRING</urn:queryString>
-      </urn:queryAll>
    </soapenv:Body>
 </soapenv:Envelope>
 """
@@ -673,6 +629,50 @@ class SalesforceConfiguracoes(Enum):
 </soapenv:Envelope>
 """
     
+        # XML para realização de login
+    XML_LOGIN = """
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:partner.soap.sforce.com">
+   <soapenv:Body>
+      <urn:login>
+         <urn:username>USERNAME</urn:username>
+         <urn:password>SENHA_SECRET</urn:password>
+      </urn:login>
+   </soapenv:Body>
+</soapenv:Envelope>
+"""
+    
+    # XML para realização de logout
+    XML_LOGOUT = """
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:partner.soap.sforce.com">
+   <soapenv:Header>
+      <urn:SessionHeader>
+         <urn:sessionId>SESSAO_ID</urn:sessionId>
+      </urn:SessionHeader>
+   </soapenv:Header>
+   <soapenv:Body>
+      <urn:logout/>
+   </soapenv:Body>
+</soapenv:Envelope>
+"""
+
+    # XML para realização de Querys
+    XML_QUERY = """
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:partner.soap.sforce.com">
+   <soapenv:Header>
+      <urn:QueryOptions>
+         <urn:batchSize>TAMANHO_BATCH_QUERY</urn:batchSize>
+      </urn:QueryOptions>
+      <urn:SessionHeader>
+         <urn:sessionId>SESSAO_ID</urn:sessionId>
+      </urn:SessionHeader>
+   </soapenv:Header>
+   <soapenv:Body>
+      <urn:queryAll>
+         <urn:queryString>QUERY_STRING</urn:queryString>
+      </urn:queryAll>
+   </soapenv:Body>
+</soapenv:Envelope>
+"""
     
 class SalesforceEndpoints(Enum):
     
@@ -683,13 +683,6 @@ class SalesforceEndpoints(Enum):
     URL_SOAP_PADRAO = f"https://login.salesforce.com/services/Soap/{SalesforceConfiguracoes.TIPO_LOGIN_PADRAO.value}/{SalesforceConfiguracoes.VERSAO_API_PADRAO.value}"
     
     SERVICO_SOAP = "/services/Soap" + "/" + SalesforceConfiguracoes.TIPO_LOGIN_PADRAO.value + "/" + SalesforceConfiguracoes.VERSAO_API_PADRAO.value
-    SOBJ_SERVICE = '/services/data/v%s/sobjects%s'
-    REVOKE_SERVICE = '/services/oauth2/revoke'
-    VERSIONS_SERVICE = '/services/data/'
-    QUERY_SERVICE = "/services/data/v" + SalesforceConfiguracoes.VERSAO_API_PADRAO.value + "/query"
-    SEARCH_SERVICE = '/services/data/v%s/search/?%s'
-    TOOLING_ANONYMOUS = '/services/data/v%s/tooling/executeAnonymous/?%s'
-    APPROVAL_SERVICE = '/services/data/v%s/process/approvals/'    
     
     VERSAO_API_PADRAO = "58.0" 
 
@@ -700,7 +693,7 @@ class Utilidades:
     """
     
     @staticmethod
-    def retorna_valorelemento_pornome(xml_string, nome_elemento):
+    def retorna_valorelemento_pornome(xml_string, nome_elemento, erro=False):
         
         """ Retorna o conteúdo interno de um XML se encontrado, caso contrário, retorna None
         
@@ -719,5 +712,47 @@ class Utilidades:
                 .replace('<' + nome_elemento + '>', '')
                 .replace('</' + nome_elemento + '>', '')
             )
-            
+        
+        elif len(elementos) == 0 and erro:
+
+            nome_elemento = "faultcode" if nome_elemento == "sf:exceptionCode" else "faultstring"
+            valores_elemento = Utilidades.retorna_valorelemento_pornome(xml_string, nome_elemento, erro=erro, case_insensitive=case_insensitive)
+
         return valores_elemento if len(elementos) > 0 else None
+    
+    @staticmethod
+    def valores_campos_xml(xml_string, nome_elemento, case_insensitive=True):
+            
+        """ Retorna uma lista contendo o conteúdo interno de um XML se encontrado, caso contrário, retorna uma lista vazia
+        
+            xml_string: str - XML para manipulação 
+            nome_elemento: str - Nome da TAG para a procura
+            case_insensitive: bool = False - Normaliza as variáveis xml_string e nome_elemento para caixa-baixa, assim permitindo o parser adequadamente
+            
+        """
+
+        # TRANSFORMA EM CAIXA-BAIXA QUANDO QUANDO A VARIÁVEL case_insensitive FOR VERDADEIRA
+        # ASSIM PERMITINDO O PARSER ADEQUADAMENTE
+        xml_string = xml_string.lower() if case_insensitive else xml_string
+        nome_elemento = nome_elemento.lower() if case_insensitive else nome_elemento
+        nome_elemento = "sf:" + nome_elemento
+
+        xmlDom = xml.dom.minidom.parseString(xml_string)
+        elementos = xmlDom.getElementsByTagName(nome_elemento)
+        
+        valores_elemento = []
+        
+        # SE A QUANTIDADE DE ELEMENTOS FOR MAIOR QUE ZERO
+        # ITERA A LITA E ADICIONA O VALOR DE CADA UM NA LISTA valores_elemento
+        if len(elementos) > 0:
+            
+            for elemento in elementos:
+
+                valores_elemento.append(
+                    elemento
+                    .toxml()
+                    .replace('<' + nome_elemento + '>', '')
+                    .replace('</' + nome_elemento + '>', '')
+                )
+        
+        return valores_elemento
