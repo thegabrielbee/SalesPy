@@ -430,24 +430,22 @@ class SoapDados:
         ]
         query_campos_tmp.remove("SELECT")
 
-        for campo in query_campos_tmp:
+        for i, campo in enumerate(query_campos_tmp):
 
             if campo == "FROM":
 
+                objeto = query_campos_tmp[i+1]
                 break
 
             query_campos.append(campo)
 
         # Coleta os dados da query e armazena no pandas.DataFrame: df_query_dados 
         df_query_dados = pd.DataFrame()
-        
+
         for campo in query_campos:
-            
-            df_query_dados[campo] = Utilidades.valores_campos_xml(xml_string=resposta.text, nome_elemento=campo, case_insensitive=True)
-            
-            # DEFINE COMO np.nan TODOS OS CAMPOS COM VALORES NULOS
-            df_query_dados.loc[df_query_dados[campo].str.contains('xsi:nil="true"')] = np.nan
-            
+
+            df_query_dados[campo] = Utilidades.valores_campos_xml(xml_string=resposta.text, objeto=objeto, nome_elemento=campo, case_insensitive=True)
+
         return df_query_dados
     
 class SoapAuth:
@@ -699,6 +697,7 @@ class Utilidades:
         
             xml_string: str - XML para manipulação 
             nome_elemento: str - Nome da TAG para a procura
+            erro: bool = False - Permite ou não a recursão de mais de uma tags no caso de um xml de erro 
             
         """
         
@@ -716,12 +715,12 @@ class Utilidades:
         elif len(elementos) == 0 and erro:
 
             nome_elemento = "faultcode" if nome_elemento == "sf:exceptionCode" else "faultstring"
-            valores_elemento = Utilidades.retorna_valorelemento_pornome(xml_string, nome_elemento, erro=erro, case_insensitive=case_insensitive)
+            valores_elemento = Utilidades.retorna_valorelemento_pornome(xml_string, nome_elemento, erro=erro)
 
         return valores_elemento if len(elementos) > 0 else None
     
     @staticmethod
-    def valores_campos_xml(xml_string, nome_elemento, case_insensitive=True):
+    def valores_campos_xml(xml_string, nome_elemento, objeto, case_insensitive=True):
             
         """ Retorna uma lista contendo o conteúdo interno de um XML se encontrado, caso contrário, retorna uma lista vazia
         
@@ -734,25 +733,60 @@ class Utilidades:
         # TRANSFORMA EM CAIXA-BAIXA QUANDO QUANDO A VARIÁVEL case_insensitive FOR VERDADEIRA
         # ASSIM PERMITINDO O PARSER ADEQUADAMENTE
         xml_string = xml_string.lower() if case_insensitive else xml_string
+        objeto = objeto.lower()
         nome_elemento = nome_elemento.lower() if case_insensitive else nome_elemento
         nome_elemento = "sf:" + nome_elemento
 
         xmlDom = xml.dom.minidom.parseString(xml_string)
-        elementos = xmlDom.getElementsByTagName(nome_elemento)
-        
+        # VARIÁVEIS DESTINADAS A ARMAZENAR RESPECTIVAMENTE O PRIMEIRO NOME DE CAMPOS COMPOSTOS (NOME BASE)
+        # EX: PROFILE, DE PROFILE.LICENCE.USER
+        # E O ÚLTIMO NOME DE CAMPOS COMPOSTOS (NOME ALVO) DESTINADO AO FILTRO FINAL PARA COLETA DO VALOR
+        nome_elemento_base, nome_elemento_alvo = nome_elemento, nome_elemento
+        campo_composto = False
+
+        if "." in nome_elemento:
+
+            nome_elemento_base, nome_elemento_alvo = nome_elemento.split(".")[0], "sf:" + nome_elemento.split(".")[-1]
+            campo_composto = True
+
+        if nome_elemento == "sf:id":
+
+            elementos = [id.split("</sf:id>")[0] for id in xml_string.split(f"<sf:type>{objeto}</sf:type><sf:id>")[1:]]
+
+        elif nome_elemento == "sf:name":
+
+            name_regex = regex.compile("<sf:type>{}(.*?)<sf:name>(.*?)<\/sf:name>".format(objeto))
+            elementos = [elemento[-1] for elemento in name_regex.findall(xml_string)]
+
+        else:
+
+            elementos = xmlDom.getElementsByTagName(nome_elemento_base)
+            elementos = [elemento.toxml() for elemento in elementos]
+      
         valores_elemento = []
-        
+
         # SE A QUANTIDADE DE ELEMENTOS FOR MAIOR QUE ZERO
         # ITERA A LITA E ADICIONA O VALOR DE CADA UM NA LISTA valores_elemento
-        if len(elementos) > 0:
-            
+        if len(elementos) > 0:      
+
             for elemento in elementos:
 
+                if campo_composto:
+                    
+                    padrao_regex = "<" + nome_elemento_alvo + ">" +".*"+ "</" + nome_elemento_alvo + ">"
+                    elemento = regex.compile(padrao_regex).findall(elemento)    
+                    elemento =  np.nan if len(elemento) == 0 else elemento[0].replace('<' + nome_elemento_alvo + '>', '').replace('</' + nome_elemento_alvo + '>', '')
+                    
+                    valores_elemento.append(
+                        elemento
+                    )
+                    continue
+
+                elemento = elemento.replace('<' + nome_elemento + '>', '').replace('</' + nome_elemento + '>', '')
+                elemento = np.nan if 'xsi:nil="true"' in elemento else elemento 
+                
                 valores_elemento.append(
                     elemento
-                    .toxml()
-                    .replace('<' + nome_elemento + '>', '')
-                    .replace('</' + nome_elemento + '>', '')
                 )
-        
+
         return valores_elemento
