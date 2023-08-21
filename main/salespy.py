@@ -70,6 +70,11 @@ class SoapDados:
         do Bancoo de Dados da ORG
     """
     
+    query_localizador = ""
+    query_campos = []
+    query_campos_tmp = []
+    objeto = ""
+    
     def delete(self, ids: Iterable[list, np.array, pd.DataFrame, pd.Series]):
 
         """ Método destinado a realização de Deleções ao Banco de Dados da ORG.
@@ -380,7 +385,7 @@ class SoapDados:
         
         return resposta
     
-    def query(self, query_string, tamanho_match_query=None):
+    def query(self, query_string="", tamanho_match_query=None):
     
         """ Método destinado a realização de consultas ao Banco de Dados da ORG.
             
@@ -392,13 +397,22 @@ class SoapDados:
         headers = {
 
             "Content-Type": "text/xml", 
-            "SOAPAction": "queryAll"
+            "SOAPAction": "queryMore"
 
         }
 
+        if self.query_localizador not in ["", '<queryLocator xsi:nil="true"/>']:
+            
+            xml_query = SalesforceConfiguracoes.XML_QUERY_MORE.value
+            xml_query = regex.sub("QUERY_LOCALIZADOR", self.query_localizador, xml_query)
+            
+        else:
+            
+            xml_query = SalesforceConfiguracoes.XML_QUERY_ALL.value
+            xml_query = regex.sub("QUERY_STRING", query_string, xml_query)
+        
         # Coleta o XML e adequa os respectivos dados
-        xml_query = regex.sub("SESSAO_ID", self.sessao_id, SalesforceConfiguracoes.XML_QUERY.value)
-        xml_query = regex.sub("QUERY_STRING", query_string, xml_query)
+        xml_query = regex.sub("SESSAO_ID", self.sessao_id, xml_query)
         tamanho_match_query = SalesforceConfiguracoes.TAMANHO_BATCH_QUERY.value if tamanho_match_query is None else tamanho_match_query
         xml_query = regex.sub("TAMANHO_BATCH_QUERY", tamanho_match_query, xml_query)
         
@@ -420,32 +434,47 @@ class SoapDados:
 
             raise Exception(codigo_excecao, msg_excecao)
             
-        # Coleta os campos solicitados na String de Consulta. Sendo estes mais à frente coletados junto ao retorno,
-        # visto que todo sistema é falho e não é desejável dados não solicitados
         query_campos = []
-        query_campos_tmp = [
+        
+        if query_string:
 
-            campo for campo in query_string.replace(",", "").split()
+            # Coleta os campos solicitados na String de Consulta. Sendo estes mais à frente coletados junto ao retorno,
+            # visto que todo sistema é falho e não é desejável dados não solicitados    
+            self.query_campos_tmp = [
 
-        ]
-        query_campos_tmp.remove("SELECT")
+                campo for campo in query_string.replace(",", "").split()
 
-        for i, campo in enumerate(query_campos_tmp):
+            ]
+            self.query_campos_tmp.remove("SELECT")
 
-            if campo == "FROM":
+            for i, campo in enumerate(self.query_campos_tmp):
 
-                objeto = query_campos_tmp[i+1]
-                break
+                if campo == "FROM":
 
-            query_campos.append(campo)
+                    self.objeto = self.query_campos_tmp[i+1]
+                    break
+
+                self.query_campos.append(campo)
 
         # Coleta os dados da query e armazena no pandas.DataFrame: df_query_dados 
         df_query_dados = pd.DataFrame()
+        
+        for campo in self.query_campos:
 
-        for campo in query_campos:
+            df_query_dados[campo] = Utilidades.valores_campos_xml(xml_string=resposta.text, objeto=self.objeto, nome_elemento=campo, case_insensitive=True)
 
-            df_query_dados[campo] = Utilidades.valores_campos_xml(xml_string=resposta.text, objeto=objeto, nome_elemento=campo, case_insensitive=True)
-
+        self.query_localizador = Utilidades.retorna_valorelemento_pornome(xml_string=resposta.text, nome_elemento="queryLocator")
+        
+        while self.query_localizador not in ["", '<queryLocator xsi:nil="true"/>']:
+            
+            df = self.query()
+            lgg.debug(self.query_localizador + " - " + str(len(df)) + " " + str(self.query_campos_tmp))
+            
+            df_query_dados = pd.concat([df_query_dados, df])
+            
+        self.query_localizador = ""
+        self.query_campos = []
+        
         return df_query_dados
     
 class SoapAuth:
@@ -654,7 +683,7 @@ class SalesforceConfiguracoes(Enum):
 """
 
     # XML para realização de Querys
-    XML_QUERY = """
+    XML_QUERY_ALL = """
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:partner.soap.sforce.com">
    <soapenv:Header>
       <urn:QueryOptions>
@@ -668,6 +697,24 @@ class SalesforceConfiguracoes(Enum):
       <urn:queryAll>
          <urn:queryString>QUERY_STRING</urn:queryString>
       </urn:queryAll>
+   </soapenv:Body>
+</soapenv:Envelope>
+"""
+    # XML para realização de Querys
+    XML_QUERY_MORE = """
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:partner.soap.sforce.com">
+   <soapenv:Header>
+      <urn:QueryOptions>
+         <urn:batchSize>TAMANHO_BATCH_QUERY</urn:batchSize>
+      </urn:QueryOptions>
+      <urn:SessionHeader>
+         <urn:sessionId>SESSAO_ID</urn:sessionId>
+      </urn:SessionHeader>
+   </soapenv:Header>
+   <soapenv:Body>
+      <urn:queryMore>
+         <urn:queryLocator>QUERY_LOCALIZADOR</urn:queryLocator>
+      </urn:queryMore>
    </soapenv:Body>
 </soapenv:Envelope>
 """
